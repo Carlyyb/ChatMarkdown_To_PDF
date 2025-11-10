@@ -1,3 +1,52 @@
+/* ===== 导出按钮组样式 ===== */
+.md-export-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  margin-bottom: 8px;
+  padding: 8px 0;
+}
+
+.mdx-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.mdx-btn:hover {
+  background: #e5e7eb;
+  border-color: #9ca3af;
+}
+
+.mdx-btn:active {
+  background: #d1d5db;
+  transform: scale(0.98);
+}
+
+@media (prefers-color-scheme: dark) {
+  .mdx-btn {
+    color: #e5e7eb;
+    background: #374151;
+    border-color: #4b5563;
+  }
+  
+  .mdx-btn:hover {
+    background: #4b5563;
+    border-color: #6b7280;
+  }
+  
+  .mdx-btn:active {
+    background: #1f2937;
+  }
+}
+
 /* ===== 菜单项样式 ===== */
 /* 子菜单里我们的分组与条目 */
 .mdx-menu-group {

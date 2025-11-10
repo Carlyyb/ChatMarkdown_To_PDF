@@ -24,13 +24,16 @@
     "*://gemini.google.com/*",
     "*://aistudio.google.com/*"
   ],
-  "web_accessible_resources": [{
-    "resources": [
-      "libs/html2pdf.bundle.min.js",
-      "libs/dom-to-image-more.min.js"
-    ],
-    "matches": ["<all_urls>"]
-  }],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "libs/*.js",
+        "libs/html2pdf.bundle.min.js",
+        "libs/dom-to-image-more.min.js"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "content_scripts": [
     {
       "matches": [
@@ -44,7 +47,7 @@
         "content.js"
       ],
       "css": ["md.css"],
-      "run_at": "document_idle"
+      "run_at": "document_end"
     }
   ]
 }
