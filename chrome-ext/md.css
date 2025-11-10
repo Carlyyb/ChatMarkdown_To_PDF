@@ -1,0 +1,54 @@
+/* ===== 菜单项样式 ===== */
+/* 子菜单里我们的分组与条目 */
+.mdx-menu-group {
+  border-top: 1px solid rgba(0,0,0,.06);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+
+.mdx-menu-item {
+  font-size: 13px;
+  line-height: 1;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-radius: 6px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.mdx-menu-item:hover {
+  background: rgba(0,0,0,.06);
+}
+
+/* 降级菜单：当找不到省略号按钮时的备用按钮组 */
+.mdx-fallback-menu button {
+  font-size: 12px;
+  transition: background-color 0.2s ease;
+}
+
+.mdx-fallback-menu button:hover {
+  opacity: 0.8;
+}
+
+@media (prefers-color-scheme: dark) {
+  .mdx-menu-group { 
+    border-top-color: rgba(255,255,255,.08); 
+  }
+  .mdx-menu-item:hover { 
+    background: rgba(255,255,255,.08); 
+  }
+}
+
+/* Export surface (用于导出时的容器) */
+.gpt-export-surface { 
+  padding: 18px; 
+  max-width: 820px; 
+  background: white;
+  color: #000;
+}
+
+.gpt-export-surface .markdown, 
+.gpt-export-surface .prose {
+  color: #000; /* force black on white background */
+}
+

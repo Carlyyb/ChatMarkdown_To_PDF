@@ -1,0 +1,66 @@
+{
+  "extName": {
+    "message": "ChatGPT/Gemini → PDF/PNG Exporter",
+    "description": "Extension name"
+  },
+  "extDescription": {
+    "message": "One-click export of AI assistant replies to PDF or PNG. Supports exporting only the selected text and merging multiple replies into one PDF.",
+    "description": "Extension description"
+  },
+  "exportPdf": {
+    "message": "Export as PDF",
+    "description": "Menu item for PDF export"
+  },
+  "exportPng": {
+    "message": "Export as PNG",
+    "description": "Menu item for PNG export"
+  },
+  "exportSelection": {
+    "message": "Export Selection as PDF",
+    "description": "Menu item for selection export"
+  },
+  "settingsTitle": {
+    "message": "Export Settings",
+    "description": "Settings page title"
+  },
+  "languageLabel": {
+    "message": "Language",
+    "description": "Language selection label"
+  },
+  "fontLabel": {
+    "message": "Export Font",
+    "description": "Font selection label"
+  },
+  "saveButton": {
+    "message": "Save Settings",
+    "description": "Save button text"
+  },
+  "savedMessage": {
+    "message": "Settings saved successfully!",
+    "description": "Success message after saving"
+  },
+  "exportFailed": {
+    "message": "Export failed",
+    "description": "Error message prefix"
+  },
+  "fontSimHei": {
+    "message": "SimHei (黑体)",
+    "description": "SimHei font option"
+  },
+  "fontMicrosoftYaHei": {
+    "message": "Microsoft YaHei (微软雅黑)",
+    "description": "Microsoft YaHei font option"
+  },
+  "fontArial": {
+    "message": "Arial",
+    "description": "Arial font option"
+  },
+  "fontTimesNewRoman": {
+    "message": "Times New Roman",
+    "description": "Times New Roman font option"
+  },
+  "fontCourier": {
+    "message": "Courier New",
+    "description": "Courier font option"
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "extName": {
+    "message": "ChatGPT/Gemini → PDF/PNG 导出器",
+    "description": "扩展名称"
+  },
+  "extDescription": {
+    "message": "一键导出 AI 助手回复为 PDF 或 PNG。支持仅导出选中文本，以及合并多条回复为一个 PDF。",
+    "description": "扩展描述"
+  },
+  "exportPdf": {
+    "message": "导出为 PDF",
+    "description": "PDF 导出菜单项"
+  },
+  "exportPng": {
+    "message": "导出为 PNG",
+    "description": "PNG 导出菜单项"
+  },
+  "exportSelection": {
+    "message": "导出选区为 PDF",
+    "description": "选区导出菜单项"
+  },
+  "settingsTitle": {
+    "message": "导出设置",
+    "description": "设置页面标题"
+  },
+  "languageLabel": {
+    "message": "语言",
+    "description": "语言选择标签"
+  },
+  "fontLabel": {
+    "message": "导出字体",
+    "description": "字体选择标签"
+  },
+  "saveButton": {
+    "message": "保存设置",
+    "description": "保存按钮文字"
+  },
+  "savedMessage": {
+    "message": "设置保存成功！",
+    "description": "保存成功提示"
+  },
+  "exportFailed": {
+    "message": "导出失败",
+    "description": "错误消息前缀"
+  },
+  "fontSimHei": {
+    "message": "黑体 (SimHei)",
+    "description": "黑体字体选项"
+  },
+  "fontMicrosoftYaHei": {
+    "message": "微软雅黑 (Microsoft YaHei)",
+    "description": "微软雅黑字体选项"
+  },
+  "fontArial": {
+    "message": "Arial",
+    "description": "Arial 字体选项"
+  },
+  "fontTimesNewRoman": {
+    "message": "Times New Roman",
+    "description": "Times New Roman 字体选项"
+  },
+  "fontCourier": {
+    "message": "Courier New",
+    "description": "Courier 字体选项"
+  }
+}

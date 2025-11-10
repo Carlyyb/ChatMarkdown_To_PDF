@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MD → PDF / PNG (MVP)</title>
+  <link rel="stylesheet" href="styles.css" />
+  <!-- Markdown renderer -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- html2canvas for PNG export -->
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <!-- html2pdf bundles html2canvas + jsPDF -->
+  <script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Markdown Exporter</h1>
+    <p>Paste Markdown → Render → Export as PDF or PNG. All client-side.</p>
+  </header>
+
+  <main>
+    <section class="editor">
+      <div class="controls">
+        <button id="renderBtn">Render</button>
+        <button id="exportPdfBtn">Export PDF</button>
+        <button id="exportPngBtn">Export PNG</button>
+        <button id="exportDocxBtn" title="Stub — coming later">Export DOCX (stub)</button>
+        <label class="opt"><input type="checkbox" id="pageNumbers" checked> 页码</label>
+        <label class="opt">
+          纸张:
+          <select id="paper">
+            <option value="a4" selected>A4</option>
+            <option value="letter">US Letter</option>
+            <option value="legal">US Legal</option>
+          </select>
+        </label>
+        <label class="opt">
+          字体:
+          <select id="fontFamily">
+            <option value="Microsoft YaHei">微软雅黑</option>
+            <option value="SimHei" selected>黑体</option>
+            <option value="SimSun">宋体</option>
+            <option value="KaiTi">楷体</option>
+            <option value="FangSong">仿宋</option>
+            <option value="Arial">Arial</option>
+            <option value="Times New Roman">Times New Roman</option>
+          </select>
+        </label>
+      </div>
+      <textarea id="mdInput" placeholder="# Hello\n\nPaste your Markdown here..."></textarea>
+    </section>
+
+    <section class="preview">
+      <article id="preview" class="markdown-body"></article>
+    </section>
+  </main>
+
+  <footer>
+    <small>Typeset in system UI. Uses <code>marked</code> + <code>html2pdf</code>. Print CSS optimizes output.</small>
+  </footer>
+
+  <script src="md-export.js"></script>
+</body>
+</html>
