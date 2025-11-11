@@ -1,18 +1,66 @@
-(() => {
+﻿(() => {
   'use strict';
 
-  const DEBUG = false;
+  const DEBUG = true;
   const log = DEBUG ? console.log.bind(console, '[ChatMD2PDF]') : () => {};
   const warn = console.warn.bind(console, '[ChatMD2PDF]');
 
   const COPY_TIMEOUT = 2000;
-  const LIB_RETRY = 20;
+  const LIB_RETRY = 50;
   const LIB_INTERVAL = 100;
   const MENU_GROUP_CLASS = 'mdx-export-group';
   const MENU_ITEM_CLASS = 'mdx-menu-item';
 
   const provider = detectProvider();
   log('provider', provider);
+  // 注入页面桥脚本：拦截站内生成的 Markdown，不触碰系统剪贴板
+  injectBridge();
+
+  function injectBridge() {
+    try {
+      if (document.documentElement.__chatmd2pdf_bridge_injected) return;
+      const s = document.createElement('script');
+      s.src = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL)
+        ? chrome.runtime.getURL('bridge.js')
+        : 'bridge.js';
+      s.async = false;
+      (document.documentElement || document.head || document.body).appendChild(s);
+      document.documentElement.__chatmd2pdf_bridge_injected = true;
+      log('bridge 已注入');
+    } catch (e) {
+      warn('bridge 注入失败', e);
+    }
+  }
+
+  function waitMarkdownFromBridge(timeoutMs = 1500) {
+    return new Promise((resolve) => {
+      let timer = null;
+      const handler = (ev) => {
+        try {
+          const d = ev.data;
+          if (!d || d.source !== '__CHATMD2PDF_BRIDGE__') return;
+          if (d.type === 'CHATMD2PDF_MARKDOWN' && d.text) {
+            cleanup(); resolve({ kind: 'md', text: d.text, via: d.via });
+          } else if ((d.type === 'CHATMD2PDF_WRITE' || d.type === 'CHATMD2PDF_PLAIN') && d.text) {
+            cleanup(); resolve({ kind: 'plain', text: d.text, via: d.via });
+          }
+        } catch {}
+      };
+      const cleanup = () => {
+        window.removeEventListener('message', handler, true);
+        if (timer) clearTimeout(timer);
+      };
+      window.addEventListener('message', handler, true);
+      timer = setTimeout(() => { cleanup(); resolve(null); }, timeoutMs);
+    });
+  }
+  // 启动时打印库就绪状态
+  try {
+    const hasH2C = typeof window.html2canvas === 'function';
+    const hasJsPDF = Boolean((window.jspdf && window.jspdf.jsPDF) || window.jsPDF);
+    const hasHtml2pdf = typeof window.html2pdf === 'function';
+    log('libs', { h2c: hasH2C, jsPDF: hasJsPDF, html2pdf: hasHtml2pdf });
+  } catch {}
 
   if (provider === 'unknown') {
     warn('未识别的站点，停止注入');
@@ -205,40 +253,58 @@
   }
 
   async function performExport(action, messageEl, menuEl) {
-    await checkLibs();
+    // PDF 仅依赖 html2pdf；PNG 依赖 html2canvas
+    await checkLibs(action === 'pdf');
 
     const textPreview = getTextPreview(messageEl);
     let markdown = null;
-    let canvas = null;
-    let usedMarkdown = false;
 
     if (action !== 'selection') {
       markdown = await getMarkdownFromMessage(messageEl, menuEl);
-      if (markdown) {
-        try {
-          canvas = await renderMarkdownToCanvas(markdown);
-          usedMarkdown = true;
-        } catch (error) {
-          warn('Markdown 渲染失败，回退 DOM', error);
-          canvas = null;
-        }
-      }
     }
 
     closeMenu(menuEl);
 
-    if (!canvas) {
-      canvas = await renderDomToCanvas(messageEl, action === 'selection');
-    }
-
     if (action === 'pdf') {
       const fileName = buildFileName(markdown, textPreview, 'pdf');
-      await saveCanvasAsPdf(canvas, fileName);
-      log('PDF 导出完成', { usedMarkdown });
+      try {
+        log('导出调试', {
+          action,
+          fileName,
+          usedMarkdown: Boolean(markdown),
+          markdownLen: markdown ? markdown.length : 0,
+          markdownPreview: markdown ? markdown.slice(0, 300) : ''
+        });
+      } catch {}
+      try {
+        await exportPdfViaIframe(markdown, messageEl, action === 'selection', fileName);
+        log('PDF 导出完成 (iframe)', { usedMarkdown: Boolean(markdown) });
+      } catch (err) {
+        warn('iframe 渲染失败，回退 html2pdf', err);
+        const container = buildPdfContainer(markdown, messageEl, action === 'selection');
+        try {
+          await exportPdfViaHtml2pdf(container, fileName);
+          log('PDF 导出完成 (fallback html2pdf)', { usedMarkdown: Boolean(markdown) });
+        } finally {
+          if (container && container.parentNode) container.parentNode.removeChild(container);
+        }
+      }
     } else {
+      // PNG 仍走 html2canvas 快照
+      const canvas = await renderDomToCanvas(messageEl, action === 'selection');
       const fileName = buildFileName(markdown, textPreview, 'png');
+      try {
+        log('导出调试', {
+          action,
+          fileName,
+          usedMarkdown: Boolean(markdown),
+          markdownLen: markdown ? markdown.length : 0,
+          markdownPreview: markdown ? markdown.slice(0, 300) : '',
+          canvasSize: canvas ? { width: canvas.width, height: canvas.height } : null
+        });
+      } catch {}
       await saveCanvasAsPng(canvas, fileName);
-      log('PNG 导出完成', { usedMarkdown });
+      log('PNG 导出完成', { usedMarkdown: Boolean(markdown) });
     }
   }
 
@@ -254,49 +320,334 @@
     setTimeout(() => document.body.click(), 10);
   }
 
-  function checkLibs() {
-    const ready = () => Boolean((window.jspdf && window.jspdf.jsPDF) || window.jsPDF);
-    const html2canvasReady = () => typeof window.html2canvas === 'function';
-    if (ready() && html2canvasReady()) {
-      return Promise.resolve();
+  function checkLibs(requirePdf = false) {
+    const hasHtml2pdf = () => typeof window.html2pdf === 'function';
+    const hasH2C = () => typeof window.html2canvas === 'function';
+    // PDF 仅要求 html2pdf；PNG 要求 html2canvas
+    const ready = () => requirePdf ? hasHtml2pdf() : hasH2C();
+    if (ready()) return Promise.resolve();
+    // 如果 html2pdf 已经存在但 html2canvas 还没挂载，可能是 bundle 内部延迟，给一次短暂微任务重试
+    if (!hasH2C() && hasHtml2pdf() && !requirePdf) {
+      return new Promise((resolve, reject) => {
+        setTimeout(() => {
+          if (ready()) return resolve();
+          // 进入正常轮询
+          poll(resolve, reject, requirePdf);
+        }, 50);
+      });
     }
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => poll(resolve, reject, requirePdf));
+
+    function poll(resolve, reject, requirePdfFlag) {
       let attempts = 0;
       const timer = setInterval(() => {
         attempts += 1;
-        if (ready() && html2canvasReady()) {
+        if (ready()) {
           clearInterval(timer);
           resolve();
           return;
         }
         if (attempts >= LIB_RETRY) {
           clearInterval(timer);
-          reject(new Error('库加载超时，请刷新页面'));
+          const missing = [];
+          if (!requirePdfFlag && !hasH2C()) missing.push('html2canvas');
+          if (requirePdfFlag && !hasHtml2pdf()) missing.push('html2pdf');
+          const scripts = Array.from(document.querySelectorAll('script[src]'))
+            .map(s => s.getAttribute('src'))
+            .filter(Boolean)
+            .slice(-5);
+          reject(new Error(`库加载超时: ${missing.join(', ')}\n最近脚本: ${scripts.join(', ')}`));
         }
       }, LIB_INTERVAL);
+    }
+  }
+
+  // 构建用于 html2pdf 的容器：优先使用 Markdown 渲染，否则克隆消息 DOM
+  function buildPdfContainer(markdown, messageEl, exportSelection) {
+    const container = document.createElement('div');
+    container.style.cssText = [
+      'position:absolute',
+      'left:-9999px',
+      'top:0',
+      'max-width:800px',
+      'padding:20px',
+      'margin:0',
+      'background:#ffffff',
+      'color:#000000',
+      'font-family:"Microsoft YaHei","SimHei","黑体",sans-serif'
+    ].join(';');
+
+    // 注入基础样式，确保排版稳定、文本为黑色
+    const style = document.createElement('style');
+    style.textContent = `
+      *{box-sizing:border-box;color:#000 !important}
+      h1{font-size:22px;margin:24px 0 12px;font-weight:600}
+      h2{font-size:20px;margin:20px 0 10px;font-weight:600}
+      h3{font-size:18px;margin:18px 0 8px;font-weight:600}
+      p{margin:12px 0;white-space:pre-wrap;word-wrap:break-word}
+      ul,ol{margin:12px 0 12px 24px;padding:0}
+      li{margin:6px 0}
+      blockquote{margin:16px 0;padding:10px 16px;border-left:4px solid #d0d7de;background:#f8f8f8;border-radius:6px;color:#444}
+      pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:8px;padding:16px;overflow:auto;white-space:pre-wrap;word-wrap:break-word;margin:18px 0}
+      code{font-family:"JetBrains Mono","Consolas","SFMono-Regular",monospace;background:#f6f8fa;border:1px solid #d0d7de;border-radius:4px;padding:0 .35em}
+      pre code{background:none;border:none;padding:0}
+      table{width:100%;border-collapse:collapse;margin:18px 0;font-size:13px}
+      th,td{border:1px solid #d0d7de;padding:8px 10px;text-align:left}
+      th{background:#f0f1f3;font-weight:600}
+      img{max-width:100%;height:auto}
+    `;
+    container.appendChild(style);
+
+    let contentNode;
+    if (markdown) {
+      contentNode = document.createElement('div');
+      contentNode.innerHTML = markdownToHtml(markdown);
+    } else {
+      if (!messageEl) throw new Error('未找到消息内容');
+      if (exportSelection) {
+        const frag = getSelectionWithin(messageEl);
+        if (!frag) throw new Error('未选中文本，请先选择内容');
+        contentNode = document.createElement('div');
+        contentNode.appendChild(frag);
+      } else {
+        contentNode = messageEl.cloneNode(true);
+      }
+      cleanClonedNode(contentNode);
+    }
+    container.appendChild(contentNode);
+    document.body.appendChild(container);
+    return container;
+  }
+
+  function html2pdfOptions(filename) {
+    return {
+      margin: [8, 8, 8, 8],
+      filename,
+      image: { type: 'jpeg', quality: 0.96 },
+      html2canvas: {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+        scrollY: 0,
+        scrollX: 0
+      },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+    };
+  }
+
+  async function exportPdfViaHtml2pdf(container, filename) {
+    if (typeof window.html2pdf !== 'function') throw new Error('html2pdf 未加载');
+    await window.html2pdf().from(container).set(html2pdfOptions(filename)).save();
+  }
+
+  async function exportPdfViaIframe(markdown, messageEl, exportSelection, filename) {
+    // 保护性超时，4.5 秒仍未完成会抛错交由上层 fallback
+    const timeoutMs = 4500;
+    const timeoutP = new Promise((_, reject) => setTimeout(() => reject(new Error('iframe 导出超时')), timeoutMs));
+    return Promise.race([_exportPdfViaIframeCore(markdown, messageEl, exportSelection, filename), timeoutP]);
+  }
+
+  async function _exportPdfViaIframeCore(markdown, messageEl, exportSelection, filename) {
+    // 使用可见区域内的透明 iframe 避免离屏导致的布局/高度错误
+    // 必须通过 web_accessible_resources 暴露库文件供 iframe 加载，避免跨 realm 导致 html2canvas 空白
+    const iframe = document.createElement('iframe');
+  // 允许下载，避免 sandbox 阻止下载行为
+  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-downloads');
+    iframe.style.cssText = 'position:fixed;left:0;top:0;width:800px;height:20px;opacity:0;pointer-events:none;border:0;z-index:-1;';
+    iframe.srcdoc = '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body></body></html>';
+    document.body.appendChild(iframe);
+
+    await new Promise((resolve) => {
+      if (iframe.contentDocument?.readyState === 'complete') return resolve();
+      iframe.onload = () => resolve();
     });
+    log('iframe 初始完成');
+
+    const doc = iframe.contentDocument;
+    const head = doc.head;
+    const body = doc.body;
+
+    // 注入干净样式：白底黑字，避免宿主站 CSS 干扰
+    const styleEl = doc.createElement('style');
+    styleEl.textContent = `
+      :root{ color-scheme: light; }
+      *{ box-sizing: border-box; color:#000 !important; }
+      html,body{ margin:0; padding:0; background:#fff; }
+      body{ padding:24px; font:14px/1.65 "Microsoft YaHei","SimHei","黑体",sans-serif; }
+      h1{ font-size:22px; margin:24px 0 12px; font-weight:600; }
+      h2{ font-size:20px; margin:20px 0 10px; font-weight:600; }
+      h3{ font-size:18px; margin:18px 0 8px; font-weight:600; }
+      p{ margin:12px 0; white-space:pre-wrap; word-wrap:break-word; }
+      a{ color:#0969da; text-decoration:none; }
+      a:hover{ text-decoration:underline; }
+      code{ font-family:"JetBrains Mono","Consolas","SFMono-Regular",monospace; background:#f6f8fa; border:1px solid #d0d7de; border-radius:4px; padding:0 .35em; }
+      pre{ background:#f6f8fa; border:1px solid #d0d7de; border-radius:8px; padding:16px; overflow:auto; white-space:pre-wrap; word-wrap:break-word; margin:18px 0; }
+      pre code{ background:none; border:none; padding:0; }
+      ul,ol{ margin:12px 0 12px 24px; padding:0; }
+      li{ margin:6px 0; }
+      blockquote{ margin:16px 0; padding:10px 16px; border-left:4px solid #d0d7de; background:#f8f8f8; border-radius:6px; color:#444; }
+      table{ width:100%; border-collapse:collapse; margin:18px 0; font-size:13px; }
+      th,td{ border:1px solid #d0d7de; padding:8px 10px; text-align:left; }
+      th{ background:#f0f1f3; font-weight:600; }
+      img{ max-width:100%; height:auto; }
+    `;
+    head.appendChild(styleEl);
+  log('iframe 样式注入完成');
+
+    // 构建内容根节点
+    let contentRoot = doc.createElement('div');
+    if (markdown) {
+      contentRoot.innerHTML = markdownToHtml(markdown);
+    } else {
+      if (!messageEl) throw new Error('未找到消息内容');
+      if (exportSelection) {
+        const frag = getSelectionWithin(messageEl);
+        if (!frag) throw new Error('未选中文本');
+        contentRoot.appendChild(frag);
+      } else {
+        contentRoot = messageEl.cloneNode(true);
+      }
+      try { cleanClonedNode(contentRoot); } catch {}
+    }
+    body.appendChild(contentRoot);
+  log('内容节点装载完成', { markdown: !!markdown });
+
+    // 两帧后测量并扩展 iframe 高度，确保布局稳定
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const rect = contentRoot.getBoundingClientRect();
+    if (rect.height < 2) throw new Error('内容高度异常，可能仍在加载');
+    iframe.style.height = Math.ceil(rect.height + 48) + 'px';
+  log('内容测量完成', { height: rect.height });
+
+    // 加载 iframe 内库并等待就绪
+    const ifw = await loadLibsInIframe(doc);
+  log('iframe 库就绪', { hasH2C: !!ifw.html2canvas, hasJsPDF: !!(ifw.jspdf?.jsPDF || ifw.jsPDF) });
+    const JsPDFCtor = ifw.jspdf?.jsPDF || ifw.jsPDF;
+    if (!JsPDFCtor || !ifw.html2canvas) throw new Error('iframe 内库未挂载 (html2canvas/jsPDF)');
+
+    // 使用 iframe 自己的 html2canvas 渲染，避免跨 realm 空白
+    const canvas = await ifw.html2canvas(contentRoot, {
+      backgroundColor: '#ffffff',
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      scrollX: 0,
+      scrollY: 0
+    });
+    log('canvas 渲染完成', { width: canvas.width, height: canvas.height });
+
+    // 分页写入 A4 PDF
+    const pdf = new JsPDFCtor({ unit: 'pt', format: 'a4', compress: true });
+    const a4w = 595.28;
+    const a4h = 841.89;
+    const cw = canvas.width;
+    const ch = canvas.height;
+    const scale = a4w / cw;
+    const pagePx = Math.floor(a4h / scale);
+    const tmp = doc.createElement('canvas');
+    const ctx = tmp.getContext('2d');
+
+    let offset = 0;
+    let page = 0;
+    while (offset < ch) {
+      const sliceH = Math.min(pagePx, ch - offset);
+      tmp.width = cw;
+      tmp.height = sliceH;
+      ctx.clearRect(0, 0, cw, sliceH);
+      ctx.drawImage(canvas, 0, offset, cw, sliceH, 0, 0, cw, sliceH);
+      const img = tmp.toDataURL('image/jpeg', 0.92);
+      if (page > 0) pdf.addPage();
+      pdf.addImage(img, 'JPEG', 0, 0, a4w, sliceH * scale);
+      offset += sliceH;
+      page += 1;
+    }
+    log('分页写入完成', { pages: page });
+    // 优先在 iframe 内保存；若被浏览器策略阻止，则在父页面兜底下载
+    try {
+      const maybePromise = pdf.save && pdf.save(filename, { returnPromise: true });
+      if (maybePromise && typeof maybePromise.then === 'function') {
+        await maybePromise;
+      }
+    } catch (e) {
+      try {
+        const blob = pdf.output('blob');
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 200);
+      } catch (e2) {
+        throw e2;
+      }
+    }
+    iframe.remove();
+  }
+
+  // 在 iframe 内加载库，并轮询直到 html2canvas 和 jsPDF 就绪
+  async function loadLibsInIframe(doc) {
+    const add = (src) => new Promise((resolve, reject) => {
+      const s = doc.createElement('script');
+      s.src = src;
+      s.referrerPolicy = 'no-referrer';
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error('iframe 脚本加载失败: ' + src));
+      (doc.head || doc.body).appendChild(s);
+    });
+    const base = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL)
+      ? chrome.runtime.getURL('libs/')
+      : 'libs/';
+    log('加载 iframe 库', { base });
+    await add(base + 'html2canvas.min.js');
+    log('html2canvas 加载完成');
+    await add(base + 'jspdf.umd.min.js');
+    log('jspdf.umd 加载完成');
+    // 如需 html2pdf 的高级分页，可再加载：
+    // await add(base + 'html2pdf.bundle.min.js');
+
+    const ifw = doc.defaultView;
+    for (let i = 0; i < 30; i++) { // 最长 ~3s
+      const hasH2C = !!ifw.html2canvas;
+      const hasJsPDF = !!(ifw.jspdf?.jsPDF || ifw.jsPDF);
+      if (hasH2C && hasJsPDF) return ifw;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    throw new Error('iframe 内库未就绪(html2canvas/jsPDF)');
   }
 
   async function getMarkdownFromMessage(messageEl, menuEl) {
-    const copyButton = findCopyButton(messageEl);
+    // A. 优先使用页面桥拦截，不读系统剪贴板
+    const copyButton = findCopyButton(messageEl) || (menuEl && findCopyItemInMenu(menuEl));
     if (copyButton) {
-      const md = await triggerCopyElement(copyButton);
-      if (md) return md;
+      const bridgeWait = waitMarkdownFromBridge(1500);
+      copyButton.click();
+      const got = await bridgeWait;
+      if (got && got.text && got.text.trim()) {
+        log('bridge 捕获到文本', { kind: got.kind, via: got.via, len: got.text.length });
+        return got.text;
+      }
     }
 
+    // B. 新兜底：不依赖剪贴板权限
+    //    1) 若菜单项存在，再触发一次 Copy 并仅等待 bridge（再 800ms）
     const menuCopyItem = menuEl ? findCopyItemInMenu(menuEl) : null;
-    if (menuCopyItem) {
-      const md = await triggerCopyElement(menuCopyItem);
-      if (md) return md;
+    if (menuCopyItem && !copyButton) {
+      const bridgeWait2 = waitMarkdownFromBridge(800);
+      menuCopyItem.click();
+      const got2 = await bridgeWait2;
+      if (got2 && got2.text && got2.text.trim()) return got2.text;
     }
 
+    //    2) 最后兜底：直接从 DOM 克隆导出（不一定是完美 Markdown，但可保证导出）
     try {
-      const text = await navigator.clipboard.readText();
-      if (text && text.trim()) return text;
-    } catch (error) {
-      warn('读取系统剪贴板失败', error);
+      const textPreview = getTextPreview(messageEl);
+      return textPreview || '';
+    } catch (_) {
+      return '';
     }
-    return null;
   }
 
   function findCopyItemInMenu(menuEl) {
@@ -388,7 +739,8 @@
     const html = markdownToHtml(markdown || '');
     const iframe = document.createElement('iframe');
     iframe.setAttribute('sandbox', 'allow-same-origin');
-    iframe.style.cssText = 'position:fixed;left:-99999px;top:-99999px;width:960px;height:10px;visibility:hidden;border:none;';
+    // 使用视口内透明方式避免离屏导致高度或渲染异常
+    iframe.style.cssText = 'position:fixed;left:0;top:0;width:960px;height:10px;opacity:0;pointer-events:none;border:none;';
 
     const style = `
       <style>
@@ -429,6 +781,7 @@
     iframe.style.height = `${height}px`;
     await new Promise((resolve) => setTimeout(resolve, 60));
 
+    if (!window.html2canvas) throw new Error('html2canvas 未加载');
     const canvas = await window.html2canvas(target, {
       backgroundColor: '#ffffff',
       scale: 2,
@@ -671,7 +1024,8 @@
   async function renderDomToCanvas(messageEl, exportSelection) {
     if (!messageEl) throw new Error('未找到消息内容');
     const container = document.createElement('div');
-    container.style.cssText = 'position:fixed;left:-99999px;top:-99999px;width:960px;background:#fff;padding:32px;color:#000;';
+    // 视口内透明隐藏，防止离屏导致某些站点对大负偏移元素进行特殊处理
+    container.style.cssText = 'position:fixed;left:0;top:0;opacity:0;pointer-events:none;width:960px;background:#fff;padding:32px;color:#000;';
 
     let targetNode;
     if (exportSelection) {
@@ -689,6 +1043,7 @@
     container.appendChild(targetNode);
     document.body.appendChild(container);
 
+    if (!window.html2canvas) throw new Error('html2canvas 未加载');
     const canvas = await window.html2canvas(container, {
       backgroundColor: '#ffffff',
       scale: 2,
@@ -721,37 +1076,7 @@
     return fragment.childNodes.length ? fragment : null;
   }
 
-  async function saveCanvasAsPdf(canvas, fileName) {
-    const JsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
-    if (!JsPDFCtor) throw new Error('jsPDF 未就绪');
-    const pdf = new JsPDFCtor({ unit: 'pt', format: 'a4', compress: true });
-    const a4w = 595.28;
-    const a4h = 841.89;
-    const cw = canvas.width;
-    const ch = canvas.height;
-    const scale = a4w / cw;
-    const pagePx = Math.floor(a4h / scale);
-    const tempCanvas = document.createElement('canvas');
-    const ctx = tempCanvas.getContext('2d');
-
-    let offset = 0;
-    let pageIndex = 0;
-    while (offset < ch) {
-      const sliceHeight = Math.min(pagePx, ch - offset);
-      tempCanvas.width = cw;
-      tempCanvas.height = sliceHeight;
-      ctx.clearRect(0, 0, cw, sliceHeight);
-      ctx.drawImage(canvas, 0, offset, cw, sliceHeight, 0, 0, cw, sliceHeight);
-      const imgData = tempCanvas.toDataURL('image/jpeg', 0.92);
-      if (pageIndex > 0) {
-        pdf.addPage();
-      }
-      pdf.addImage(imgData, 'JPEG', 0, 0, a4w, sliceHeight * scale);
-      offset += sliceHeight;
-      pageIndex += 1;
-    }
-    pdf.save(fileName);
-  }
+  // 已移除基于 canvas 的 PDF 生成，统一走 html2pdf DOM 路径，避免空白问题
 
   async function saveCanvasAsPng(canvas, fileName) {
     const blob = await new Promise((resolve, reject) => {
@@ -775,4 +1100,5 @@
       link.remove();
     }, 200);
   }
+
 })();

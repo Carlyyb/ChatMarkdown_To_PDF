@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
   "name": "ChatMarkdown To PDF",
-  "version": "3.2.0",
+  "version": "1.0.0",
   "description": "Export ChatGPT/Gemini messages to PDF/PNG from Markdown or DOM.",
-  "permissions": ["storage", "scripting", "activeTab", "clipboardRead"],
+  "default_locale": "en",
+  "permissions": ["storage", "scripting", "activeTab"],
   "host_permissions": [
     "https://chat.openai.com/*",
     "https://chatgpt.com/*",
@@ -18,16 +19,22 @@
       "https://aistudio.google.com/*"
     ],
     "js": [
-      "libs/jspdf.umd.min.js",
       "libs/html2canvas.min.js",
+      "libs/html2pdf.bundle.min.js",
       "content.js"
     ],
     "css": ["styles/inject.css"],
     "run_at": "document_end"
   }],
   "web_accessible_resources": [{
-    "resources": ["libs/*.js"],
-    "matches": ["<all_urls>"]
+    "resources": [
+      "bridge.js",
+      "libs/html2canvas.min.js",
+      "libs/jspdf.umd.min.js",
+      "libs/html2pdf.bundle.min.js",
+      "libs/*.map"
+    ],
+    "matches": ["*://*/*"]
   }],
   "action": {
     "default_title": "ChatMarkdown To PDF"
