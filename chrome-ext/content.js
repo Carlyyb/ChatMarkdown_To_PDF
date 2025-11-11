@@ -10,8 +10,6 @@
   const LIB_INTERVAL = 100;
   const MENU_GROUP_CLASS = 'mdx-export-group';
   const MENU_ITEM_CLASS = 'mdx-menu-item';
-  const QUICK_ACTION_CONTAINER_CLASS = 'mdx-export-quick-actions';
-  const QUICK_ACTION_BUTTON_CLASS = 'mdx-export-quick-button';
   const MESSAGE_CONTAINER_SELECTORS = [
     '.agent-turn',
     '[data-message-author-role="assistant"]',
@@ -123,13 +121,19 @@
     }
     if (menuEl.querySelector(`.${MENU_GROUP_CLASS}`)) return;
 
-    const baseItems = menuEl.querySelectorAll('[role="menuitem"]');
-    if (!baseItems || baseItems.length < 2) return;
-
-    setTimeout(() => {
-      if (menuEl.querySelector(`.${MENU_GROUP_CLASS}`)) return;
+    const attemptInject = () => {
+      if (menuEl.querySelector(`.${MENU_GROUP_CLASS}`)) return true;
+      const baseItems = menuEl.querySelectorAll('[role="menuitem"]');
+      if (!baseItems || baseItems.length < 2) return false;
       injectMenuItems(menuEl, messageEl);
-    }, 50);
+      return true;
+    };
+
+    if (attemptInject()) return;
+    requestAnimationFrame(() => {
+      if (attemptInject()) return;
+      setTimeout(attemptInject, 80);
+    });
   }
 
   function injectMenuItems(menuEl, messageEl) {
@@ -603,8 +607,8 @@
     // 使用可见区域内的透明 iframe 避免离屏导致的布局/高度错误
     // 必须通过 web_accessible_resources 暴露库文件供 iframe 加载，避免跨 realm 导致 html2canvas 空白
     const iframe = document.createElement('iframe');
-    // 允许脚本、同源与下载（含用户激活版本，以兼容 chromium 新策略）
-    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-downloads allow-downloads-by-user-activation');
+    // 允许脚本、同源与下载，避免 sandbox 阻止保存
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-downloads');
     iframe.style.cssText = 'position:fixed;left:0;top:0;width:800px;height:20px;opacity:0;pointer-events:none;border:0;z-index:-1;';
     iframe.srcdoc = '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body></body></html>';
     document.body.appendChild(iframe);
@@ -644,7 +648,7 @@
       img{ max-width:100%; height:auto; }
     `;
     head.appendChild(styleEl);
-  log('iframe 样式注入完成');
+    log('iframe 样式注入完成');
 
     // 构建内容根节点
     let contentRoot = doc.createElement('div');
@@ -662,18 +666,44 @@
       try { cleanClonedNode(contentRoot); } catch {}
     }
     body.appendChild(contentRoot);
-  log('内容节点装载完成', { markdown: !!markdown });
+    log('内容节点装载完成', { markdown: !!markdown });
 
     // 两帧后测量并扩展 iframe 高度，确保布局稳定
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-    const rect = contentRoot.getBoundingClientRect();
-    if (rect.height < 2) throw new Error('内容高度异常，可能仍在加载');
-    iframe.style.height = Math.ceil(rect.height + 48) + 'px';
-  log('内容测量完成', { height: rect.height });
+    let rect = contentRoot.getBoundingClientRect();
+    let attempts = 0;
+    while (rect.height < 2 && attempts < 5) {
+      await new Promise(r => requestAnimationFrame(r));
+      rect = contentRoot.getBoundingClientRect();
+      attempts += 1;
+    }
+    let measuredHeight = rect.height;
+    if (measuredHeight < 2) {
+      const fallbackHeight = Math.max(
+        contentRoot.scrollHeight || 0,
+        contentRoot.offsetHeight || 0,
+        contentRoot.clientHeight || 0,
+        0
+      );
+      if (fallbackHeight >= 2) {
+        measuredHeight = fallbackHeight;
+      } else {
+        measuredHeight = 600;
+      }
+      warn('iframe 内容高度异常，使用兜底高度', {
+        rectHeight: rect.height,
+        scrollHeight: contentRoot.scrollHeight,
+        offsetHeight: contentRoot.offsetHeight,
+        clientHeight: contentRoot.clientHeight,
+        fallback: measuredHeight
+      });
+    }
+    iframe.style.height = Math.ceil(measuredHeight + 48) + 'px';
+    log('内容测量完成', { height: measuredHeight });
 
     // 加载 iframe 内库并等待就绪（内联注入，避免 <script src> 被 CSP/Sandbox 拦截）
     const ifw = await loadLibsInIframe(doc);
-  log('iframe 库就绪', { hasH2C: !!ifw.html2canvas, hasJsPDF: !!(ifw.jspdf?.jsPDF || ifw.jsPDF) });
+    log('iframe 库就绪', { hasH2C: !!ifw.html2canvas, hasJsPDF: !!(ifw.jspdf?.jsPDF || ifw.jsPDF) });
     const JsPDFCtor = ifw.jspdf?.jsPDF || ifw.jsPDF;
     if (!JsPDFCtor || !ifw.html2canvas) throw new Error('iframe 内库未挂载 (html2canvas/jsPDF)');
 
