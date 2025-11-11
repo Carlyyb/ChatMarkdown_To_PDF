@@ -88,6 +88,7 @@
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
         if (!(node instanceof HTMLElement)) continue;
+        scanForQuickActions(node);
         if (node.getAttribute('role') === 'menu') {
           handleMenu(node);
         } else {
@@ -102,6 +103,8 @@
     childList: true,
     subtree: true
   });
+
+  scanForQuickActions(document.body);
 
   async function handleMenu(menuEl) {
     const activeTrigger = document.activeElement && getMenuButton(document.activeElement);
@@ -257,6 +260,150 @@
       if (btn) return btn;
     }
     return null;
+  }
+
+  const quickActionRetryMap = new WeakMap();
+  let quickActionStyleInjected = false;
+
+  function scanForQuickActions(root) {
+    if (!root) return;
+    if (root instanceof DocumentFragment) {
+      root.childNodes.forEach((node) => {
+        if (node instanceof HTMLElement) scanForQuickActions(node);
+      });
+      return;
+    }
+    if (!(root instanceof HTMLElement) && root !== document.body && root !== document.documentElement) return;
+    const elements = new Set();
+    if (root instanceof HTMLElement && matchesMessageContainer(root)) {
+      elements.add(root);
+    }
+    if (root.querySelectorAll) {
+      try {
+        root.querySelectorAll(MESSAGE_CONTAINER_SELECTORS.join(',')).forEach((el) => {
+          if (el instanceof HTMLElement) elements.add(el);
+        });
+      } catch (error) {
+        warn('scanForQuickActions 查询失败', error);
+      }
+    }
+    elements.forEach((el) => ensureQuickActions(el));
+  }
+
+  function matchesMessageContainer(el) {
+    if (!(el instanceof HTMLElement)) return false;
+    return MESSAGE_CONTAINER_SELECTORS.some((sel) => {
+      try { return el.matches(sel); } catch { return false; }
+    });
+  }
+
+  function ensureQuickActions(messageEl, attempt = 0) {
+    if (!(messageEl instanceof HTMLElement)) return;
+    if (messageEl.dataset.mdxQuickInjected === '1') return;
+    const copyButton = findCopyButton(messageEl);
+    if (!copyButton) {
+      if (attempt >= 8) return;
+      if (!quickActionRetryMap.has(messageEl)) {
+        const timer = setTimeout(() => {
+          quickActionRetryMap.delete(messageEl);
+          ensureQuickActions(messageEl, attempt + 1);
+        }, 250);
+        quickActionRetryMap.set(messageEl, timer);
+      }
+      return;
+    }
+
+    const host = copyButton.parentElement;
+    if (!host || !(host instanceof HTMLElement)) return;
+
+    const pending = quickActionRetryMap.get(messageEl);
+    if (pending) clearTimeout(pending);
+    quickActionRetryMap.delete(messageEl);
+    ensureQuickActionStyle();
+
+    if (host.querySelector(`.${QUICK_ACTION_CONTAINER_CLASS}`)) {
+      messageEl.dataset.mdxQuickInjected = '1';
+      return;
+    }
+
+    const container = document.createElement('div');
+    container.className = QUICK_ACTION_CONTAINER_CLASS;
+
+    const pdfBtn = createQuickActionButton('PDF', 'pdf', messageEl);
+    const pngBtn = createQuickActionButton('PNG', 'png', messageEl);
+    const selBtn = createQuickActionButton('所选', 'selection', messageEl);
+
+    container.appendChild(pdfBtn);
+    container.appendChild(pngBtn);
+    container.appendChild(selBtn);
+
+    host.insertBefore(container, copyButton.nextSibling);
+    messageEl.dataset.mdxQuickInjected = '1';
+  }
+
+  function ensureQuickActionStyle() {
+    if (quickActionStyleInjected) return;
+    quickActionStyleInjected = true;
+    try {
+      const style = document.createElement('style');
+      style.id = 'mdx-quick-actions-style';
+      style.textContent = `
+        .${QUICK_ACTION_CONTAINER_CLASS}{
+          display:inline-flex;
+          gap:4px;
+          margin-left:6px;
+          flex-wrap:wrap;
+          align-items:center;
+        }
+        .${QUICK_ACTION_CONTAINER_CLASS} .${QUICK_ACTION_BUTTON_CLASS}{
+          border:1px solid rgba(15,23,42,0.12);
+          background:rgba(248,250,252,0.9);
+          color:#1f2937;
+          border-radius:6px;
+          font-size:12px;
+          line-height:1.4;
+          padding:3px 8px;
+          cursor:pointer;
+          transition:background 0.2s ease,border-color 0.2s ease;
+        }
+        .${QUICK_ACTION_CONTAINER_CLASS} .${QUICK_ACTION_BUTTON_CLASS}:hover{
+          background:rgba(229,231,235,0.9);
+          border-color:rgba(15,23,42,0.2);
+        }
+        .${QUICK_ACTION_CONTAINER_CLASS} .${QUICK_ACTION_BUTTON_CLASS}:active{
+          background:rgba(209,213,219,0.95);
+        }
+        :where(html[data-theme="dark"],body[data-theme="dark"],.dark) .${QUICK_ACTION_CONTAINER_CLASS} .${QUICK_ACTION_BUTTON_CLASS}{
+          background:rgba(30,41,59,0.9);
+          color:#e2e8f0;
+          border-color:rgba(148,163,184,0.4);
+        }
+        :where(html[data-theme="dark"],body[data-theme="dark"],.dark) .${QUICK_ACTION_CONTAINER_CLASS} .${QUICK_ACTION_BUTTON_CLASS}:hover{
+          background:rgba(71,85,105,0.85);
+          border-color:rgba(203,213,225,0.45);
+        }
+        :where(html[data-theme="dark"],body[data-theme="dark"],.dark) .${QUICK_ACTION_CONTAINER_CLASS} .${QUICK_ACTION_BUTTON_CLASS}:active{
+          background:rgba(51,65,85,0.9);
+        }
+      `;
+      (document.head || document.documentElement).appendChild(style);
+    } catch (error) {
+      warn('注入快捷菜单样式失败', error);
+    }
+  }
+
+  function createQuickActionButton(text, action, messageEl) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = QUICK_ACTION_BUTTON_CLASS;
+    btn.textContent = text;
+    btn.title = `导出${text}`;
+    btn.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      handleMenuAction(action, messageEl, null);
+    });
+    return btn;
   }
 
   async function performExport(action, messageEl, menuEl) {
