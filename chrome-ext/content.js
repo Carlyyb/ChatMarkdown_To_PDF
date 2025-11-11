@@ -10,6 +10,14 @@
   const LIB_INTERVAL = 100;
   const MENU_GROUP_CLASS = 'mdx-export-group';
   const MENU_ITEM_CLASS = 'mdx-menu-item';
+  const MESSAGE_CONTAINER_SELECTORS = [
+    '.agent-turn',
+    '[data-message-author-role="assistant"]',
+    '[data-message-id]',
+    '.presented-response-container',
+    '.model-response-text',
+    '.markdown.markdown-main-panel'
+  ];
 
   const provider = detectProvider();
   log('provider', provider);
@@ -110,13 +118,19 @@
     }
     if (menuEl.querySelector(`.${MENU_GROUP_CLASS}`)) return;
 
-    const baseItems = menuEl.querySelectorAll('[role="menuitem"]');
-    if (!baseItems || baseItems.length < 2) return;
-
-    setTimeout(() => {
-      if (menuEl.querySelector(`.${MENU_GROUP_CLASS}`)) return;
+    const attemptInject = () => {
+      if (menuEl.querySelector(`.${MENU_GROUP_CLASS}`)) return true;
+      const baseItems = menuEl.querySelectorAll('[role="menuitem"]');
+      if (!baseItems || baseItems.length < 2) return false;
       injectMenuItems(menuEl, messageEl);
-    }, 50);
+      return true;
+    };
+
+    if (attemptInject()) return;
+    requestAnimationFrame(() => {
+      if (attemptInject()) return;
+      setTimeout(attemptInject, 80);
+    });
   }
 
   function injectMenuItems(menuEl, messageEl) {
@@ -193,14 +207,7 @@
 
   function findMessageContainer(startEl) {
     if (!(startEl instanceof Element)) return null;
-    const candidates = [
-      '.agent-turn',
-      '[data-message-author-role="assistant"]',
-      '[data-message-id]',
-      '.presented-response-container',
-      '.model-response-text',
-      '.markdown.markdown-main-panel'
-    ];
+    const candidates = MESSAGE_CONTAINER_SELECTORS;
     let el = startEl;
     while (el && el !== document.body) {
       for (const sel of candidates) {
@@ -443,8 +450,8 @@
   }
 
   async function exportPdfViaIframe(markdown, messageEl, exportSelection, filename) {
-    // 保护性超时，4.5 秒仍未完成会抛错交由上层 fallback
-    const timeoutMs = 4500;
+    // 保护性超时：适当放宽，避免在慢机/慢盘上误判
+    const timeoutMs = 8000;
     const timeoutP = new Promise((_, reject) => setTimeout(() => reject(new Error('iframe 导出超时')), timeoutMs));
     return Promise.race([_exportPdfViaIframeCore(markdown, messageEl, exportSelection, filename), timeoutP]);
   }
@@ -453,8 +460,8 @@
     // 使用可见区域内的透明 iframe 避免离屏导致的布局/高度错误
     // 必须通过 web_accessible_resources 暴露库文件供 iframe 加载，避免跨 realm 导致 html2canvas 空白
     const iframe = document.createElement('iframe');
-  // 允许下载，避免 sandbox 阻止下载行为
-  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-downloads');
+    // 允许脚本、同源与下载，避免 sandbox 阻止保存
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-downloads');
     iframe.style.cssText = 'position:fixed;left:0;top:0;width:800px;height:20px;opacity:0;pointer-events:none;border:0;z-index:-1;';
     iframe.srcdoc = '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body></body></html>';
     document.body.appendChild(iframe);
@@ -494,7 +501,7 @@
       img{ max-width:100%; height:auto; }
     `;
     head.appendChild(styleEl);
-  log('iframe 样式注入完成');
+    log('iframe 样式注入完成');
 
     // 构建内容根节点
     let contentRoot = doc.createElement('div');
@@ -512,18 +519,44 @@
       try { cleanClonedNode(contentRoot); } catch {}
     }
     body.appendChild(contentRoot);
-  log('内容节点装载完成', { markdown: !!markdown });
+    log('内容节点装载完成', { markdown: !!markdown });
 
     // 两帧后测量并扩展 iframe 高度，确保布局稳定
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-    const rect = contentRoot.getBoundingClientRect();
-    if (rect.height < 2) throw new Error('内容高度异常，可能仍在加载');
-    iframe.style.height = Math.ceil(rect.height + 48) + 'px';
-  log('内容测量完成', { height: rect.height });
+    let rect = contentRoot.getBoundingClientRect();
+    let attempts = 0;
+    while (rect.height < 2 && attempts < 5) {
+      await new Promise(r => requestAnimationFrame(r));
+      rect = contentRoot.getBoundingClientRect();
+      attempts += 1;
+    }
+    let measuredHeight = rect.height;
+    if (measuredHeight < 2) {
+      const fallbackHeight = Math.max(
+        contentRoot.scrollHeight || 0,
+        contentRoot.offsetHeight || 0,
+        contentRoot.clientHeight || 0,
+        0
+      );
+      if (fallbackHeight >= 2) {
+        measuredHeight = fallbackHeight;
+      } else {
+        measuredHeight = 600;
+      }
+      warn('iframe 内容高度异常，使用兜底高度', {
+        rectHeight: rect.height,
+        scrollHeight: contentRoot.scrollHeight,
+        offsetHeight: contentRoot.offsetHeight,
+        clientHeight: contentRoot.clientHeight,
+        fallback: measuredHeight
+      });
+    }
+    iframe.style.height = Math.ceil(measuredHeight + 48) + 'px';
+    log('内容测量完成', { height: measuredHeight });
 
-    // 加载 iframe 内库并等待就绪
+    // 加载 iframe 内库并等待就绪（内联注入，避免 <script src> 被 CSP/Sandbox 拦截）
     const ifw = await loadLibsInIframe(doc);
-  log('iframe 库就绪', { hasH2C: !!ifw.html2canvas, hasJsPDF: !!(ifw.jspdf?.jsPDF || ifw.jsPDF) });
+    log('iframe 库就绪', { hasH2C: !!ifw.html2canvas, hasJsPDF: !!(ifw.jspdf?.jsPDF || ifw.jsPDF) });
     const JsPDFCtor = ifw.jspdf?.jsPDF || ifw.jsPDF;
     if (!JsPDFCtor || !ifw.html2canvas) throw new Error('iframe 内库未挂载 (html2canvas/jsPDF)');
 
@@ -587,32 +620,36 @@
     iframe.remove();
   }
 
-  // 在 iframe 内加载库，并轮询直到 html2canvas 和 jsPDF 就绪
+  // 在 iframe 内加载库（内联注入文本），并轮询直到 html2canvas 和 jsPDF 就绪
   async function loadLibsInIframe(doc) {
-    const add = (src) => new Promise((resolve, reject) => {
-      const s = doc.createElement('script');
-      s.src = src;
-      s.referrerPolicy = 'no-referrer';
-      s.onload = () => resolve();
-      s.onerror = () => reject(new Error('iframe 脚本加载失败: ' + src));
-      (doc.head || doc.body).appendChild(s);
-    });
-    const base = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL)
-      ? chrome.runtime.getURL('libs/')
-      : 'libs/';
-    log('加载 iframe 库', { base });
-    await add(base + 'html2canvas.min.js');
-    log('html2canvas 加载完成');
-    await add(base + 'jspdf.umd.min.js');
-    log('jspdf.umd 加载完成');
-    // 如需 html2pdf 的高级分页，可再加载：
-    // await add(base + 'html2pdf.bundle.min.js');
-
     const ifw = doc.defaultView;
-    for (let i = 0; i < 30; i++) { // 最长 ~3s
-      const hasH2C = !!ifw.html2canvas;
-      const hasJsPDF = !!(ifw.jspdf?.jsPDF || ifw.jsPDF);
-      if (hasH2C && hasJsPDF) return ifw;
+    const getURL = (p) => (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL)
+      ? chrome.runtime.getURL(p)
+      : p;
+    async function inlineScript(url) {
+      const res = await fetch(getURL(url), { cache: 'no-store' });
+      if (!res.ok) throw new Error('fetch 失败: ' + url);
+      const code = await res.text();
+      const s = doc.createElement('script');
+      s.textContent = code;
+      (doc.head || doc.body).appendChild(s);
+    }
+    log('加载 iframe 库（内联注入）');
+    await inlineScript('libs/html2canvas.min.js');
+    log('html2canvas 加载完成（内联）');
+    await inlineScript('libs/jspdf.umd.min.js');
+    log('jspdf.umd 加载完成（内联）');
+    // 如需 html2pdf 的高级分页，可再加载：
+    // await inlineScript('libs/html2pdf.bundle.min.js');
+
+    if (ifw.jspdf?.jsPDF && !ifw.jsPDF) {
+      try { ifw.jsPDF = ifw.jspdf.jsPDF; } catch (_) {}
+    }
+
+    for (let i = 0; i < 50; i++) { // 最长 ~5s
+      const readyH2C = !!ifw.html2canvas;
+      const readyPDF = !!(ifw.jspdf?.jsPDF || ifw.jsPDF);
+      if (readyH2C && readyPDF) return ifw;
       await new Promise(r => setTimeout(r, 100));
     }
     throw new Error('iframe 内库未就绪(html2canvas/jsPDF)');
