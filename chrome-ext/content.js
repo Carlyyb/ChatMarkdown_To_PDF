@@ -10,6 +10,16 @@
   const LIB_INTERVAL = 100;
   const MENU_GROUP_CLASS = 'mdx-export-group';
   const MENU_ITEM_CLASS = 'mdx-menu-item';
+  const QUICK_ACTION_CONTAINER_CLASS = 'mdx-export-quick-actions';
+  const QUICK_ACTION_BUTTON_CLASS = 'mdx-export-quick-button';
+  const MESSAGE_CONTAINER_SELECTORS = [
+    '.agent-turn',
+    '[data-message-author-role="assistant"]',
+    '[data-message-id]',
+    '.presented-response-container',
+    '.model-response-text',
+    '.markdown.markdown-main-panel'
+  ];
 
   const provider = detectProvider();
   log('provider', provider);
@@ -80,6 +90,7 @@
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
         if (!(node instanceof HTMLElement)) continue;
+        scanForQuickActions(node);
         if (node.getAttribute('role') === 'menu') {
           handleMenu(node);
         } else {
@@ -94,6 +105,8 @@
     childList: true,
     subtree: true
   });
+
+  scanForQuickActions(document.body);
 
   async function handleMenu(menuEl) {
     const activeTrigger = document.activeElement && getMenuButton(document.activeElement);
@@ -193,14 +206,7 @@
 
   function findMessageContainer(startEl) {
     if (!(startEl instanceof Element)) return null;
-    const candidates = [
-      '.agent-turn',
-      '[data-message-author-role="assistant"]',
-      '[data-message-id]',
-      '.presented-response-container',
-      '.model-response-text',
-      '.markdown.markdown-main-panel'
-    ];
+    const candidates = MESSAGE_CONTAINER_SELECTORS;
     let el = startEl;
     while (el && el !== document.body) {
       for (const sel of candidates) {
@@ -250,6 +256,150 @@
       if (btn) return btn;
     }
     return null;
+  }
+
+  const quickActionRetryMap = new WeakMap();
+  let quickActionStyleInjected = false;
+
+  function scanForQuickActions(root) {
+    if (!root) return;
+    if (root instanceof DocumentFragment) {
+      root.childNodes.forEach((node) => {
+        if (node instanceof HTMLElement) scanForQuickActions(node);
+      });
+      return;
+    }
+    if (!(root instanceof HTMLElement) && root !== document.body && root !== document.documentElement) return;
+    const elements = new Set();
+    if (root instanceof HTMLElement && matchesMessageContainer(root)) {
+      elements.add(root);
+    }
+    if (root.querySelectorAll) {
+      try {
+        root.querySelectorAll(MESSAGE_CONTAINER_SELECTORS.join(',')).forEach((el) => {
+          if (el instanceof HTMLElement) elements.add(el);
+        });
+      } catch (error) {
+        warn('scanForQuickActions 查询失败', error);
+      }
+    }
+    elements.forEach((el) => ensureQuickActions(el));
+  }
+
+  function matchesMessageContainer(el) {
+    if (!(el instanceof HTMLElement)) return false;
+    return MESSAGE_CONTAINER_SELECTORS.some((sel) => {
+      try { return el.matches(sel); } catch { return false; }
+    });
+  }
+
+  function ensureQuickActions(messageEl, attempt = 0) {
+    if (!(messageEl instanceof HTMLElement)) return;
+    if (messageEl.dataset.mdxQuickInjected === '1') return;
+    const copyButton = findCopyButton(messageEl);
+    if (!copyButton) {
+      if (attempt >= 8) return;
+      if (!quickActionRetryMap.has(messageEl)) {
+        const timer = setTimeout(() => {
+          quickActionRetryMap.delete(messageEl);
+          ensureQuickActions(messageEl, attempt + 1);
+        }, 250);
+        quickActionRetryMap.set(messageEl, timer);
+      }
+      return;
+    }
+
+    const host = copyButton.parentElement;
+    if (!host || !(host instanceof HTMLElement)) return;
+
+    const pending = quickActionRetryMap.get(messageEl);
+    if (pending) clearTimeout(pending);
+    quickActionRetryMap.delete(messageEl);
+    ensureQuickActionStyle();
+
+    if (host.querySelector(`.${QUICK_ACTION_CONTAINER_CLASS}`)) {
+      messageEl.dataset.mdxQuickInjected = '1';
+      return;
+    }
+
+    const container = document.createElement('div');
+    container.className = QUICK_ACTION_CONTAINER_CLASS;
+
+    const pdfBtn = createQuickActionButton('PDF', 'pdf', messageEl);
+    const pngBtn = createQuickActionButton('PNG', 'png', messageEl);
+    const selBtn = createQuickActionButton('所选', 'selection', messageEl);
+
+    container.appendChild(pdfBtn);
+    container.appendChild(pngBtn);
+    container.appendChild(selBtn);
+
+    host.insertBefore(container, copyButton.nextSibling);
+    messageEl.dataset.mdxQuickInjected = '1';
+  }
+
+  function ensureQuickActionStyle() {
+    if (quickActionStyleInjected) return;
+    quickActionStyleInjected = true;
+    try {
+      const style = document.createElement('style');
+      style.id = 'mdx-quick-actions-style';
+      style.textContent = `
+        .${QUICK_ACTION_CONTAINER_CLASS}{
+          display:inline-flex;
+          gap:4px;
+          margin-left:6px;
+          flex-wrap:wrap;
+          align-items:center;
+        }
+        .${QUICK_ACTION_CONTAINER_CLASS} .${QUICK_ACTION_BUTTON_CLASS}{
+          border:1px solid rgba(15,23,42,0.12);
+          background:rgba(248,250,252,0.9);
+          color:#1f2937;
+          border-radius:6px;
+          font-size:12px;
+          line-height:1.4;
+          padding:3px 8px;
+          cursor:pointer;
+          transition:background 0.2s ease,border-color 0.2s ease;
+        }
+        .${QUICK_ACTION_CONTAINER_CLASS} .${QUICK_ACTION_BUTTON_CLASS}:hover{
+          background:rgba(229,231,235,0.9);
+          border-color:rgba(15,23,42,0.2);
+        }
+        .${QUICK_ACTION_CONTAINER_CLASS} .${QUICK_ACTION_BUTTON_CLASS}:active{
+          background:rgba(209,213,219,0.95);
+        }
+        :where(html[data-theme="dark"],body[data-theme="dark"],.dark) .${QUICK_ACTION_CONTAINER_CLASS} .${QUICK_ACTION_BUTTON_CLASS}{
+          background:rgba(30,41,59,0.9);
+          color:#e2e8f0;
+          border-color:rgba(148,163,184,0.4);
+        }
+        :where(html[data-theme="dark"],body[data-theme="dark"],.dark) .${QUICK_ACTION_CONTAINER_CLASS} .${QUICK_ACTION_BUTTON_CLASS}:hover{
+          background:rgba(71,85,105,0.85);
+          border-color:rgba(203,213,225,0.45);
+        }
+        :where(html[data-theme="dark"],body[data-theme="dark"],.dark) .${QUICK_ACTION_CONTAINER_CLASS} .${QUICK_ACTION_BUTTON_CLASS}:active{
+          background:rgba(51,65,85,0.9);
+        }
+      `;
+      (document.head || document.documentElement).appendChild(style);
+    } catch (error) {
+      warn('注入快捷菜单样式失败', error);
+    }
+  }
+
+  function createQuickActionButton(text, action, messageEl) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = QUICK_ACTION_BUTTON_CLASS;
+    btn.textContent = text;
+    btn.title = `导出${text}`;
+    btn.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      handleMenuAction(action, messageEl, null);
+    });
+    return btn;
   }
 
   async function performExport(action, messageEl, menuEl) {
@@ -443,8 +593,8 @@
   }
 
   async function exportPdfViaIframe(markdown, messageEl, exportSelection, filename) {
-    // 保护性超时，4.5 秒仍未完成会抛错交由上层 fallback
-    const timeoutMs = 4500;
+    // 保护性超时：适当放宽，避免在慢机/慢盘上误判
+    const timeoutMs = 8000;
     const timeoutP = new Promise((_, reject) => setTimeout(() => reject(new Error('iframe 导出超时')), timeoutMs));
     return Promise.race([_exportPdfViaIframeCore(markdown, messageEl, exportSelection, filename), timeoutP]);
   }
@@ -453,8 +603,8 @@
     // 使用可见区域内的透明 iframe 避免离屏导致的布局/高度错误
     // 必须通过 web_accessible_resources 暴露库文件供 iframe 加载，避免跨 realm 导致 html2canvas 空白
     const iframe = document.createElement('iframe');
-  // 允许下载，避免 sandbox 阻止下载行为
-  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-downloads');
+    // 允许脚本、同源与下载（含用户激活版本，以兼容 chromium 新策略）
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-downloads allow-downloads-by-user-activation');
     iframe.style.cssText = 'position:fixed;left:0;top:0;width:800px;height:20px;opacity:0;pointer-events:none;border:0;z-index:-1;';
     iframe.srcdoc = '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body></body></html>';
     document.body.appendChild(iframe);
@@ -521,7 +671,7 @@
     iframe.style.height = Math.ceil(rect.height + 48) + 'px';
   log('内容测量完成', { height: rect.height });
 
-    // 加载 iframe 内库并等待就绪
+    // 加载 iframe 内库并等待就绪（内联注入，避免 <script src> 被 CSP/Sandbox 拦截）
     const ifw = await loadLibsInIframe(doc);
   log('iframe 库就绪', { hasH2C: !!ifw.html2canvas, hasJsPDF: !!(ifw.jspdf?.jsPDF || ifw.jsPDF) });
     const JsPDFCtor = ifw.jspdf?.jsPDF || ifw.jsPDF;
@@ -587,32 +737,36 @@
     iframe.remove();
   }
 
-  // 在 iframe 内加载库，并轮询直到 html2canvas 和 jsPDF 就绪
+  // 在 iframe 内加载库（内联注入文本），并轮询直到 html2canvas 和 jsPDF 就绪
   async function loadLibsInIframe(doc) {
-    const add = (src) => new Promise((resolve, reject) => {
-      const s = doc.createElement('script');
-      s.src = src;
-      s.referrerPolicy = 'no-referrer';
-      s.onload = () => resolve();
-      s.onerror = () => reject(new Error('iframe 脚本加载失败: ' + src));
-      (doc.head || doc.body).appendChild(s);
-    });
-    const base = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL)
-      ? chrome.runtime.getURL('libs/')
-      : 'libs/';
-    log('加载 iframe 库', { base });
-    await add(base + 'html2canvas.min.js');
-    log('html2canvas 加载完成');
-    await add(base + 'jspdf.umd.min.js');
-    log('jspdf.umd 加载完成');
-    // 如需 html2pdf 的高级分页，可再加载：
-    // await add(base + 'html2pdf.bundle.min.js');
-
     const ifw = doc.defaultView;
-    for (let i = 0; i < 30; i++) { // 最长 ~3s
-      const hasH2C = !!ifw.html2canvas;
-      const hasJsPDF = !!(ifw.jspdf?.jsPDF || ifw.jsPDF);
-      if (hasH2C && hasJsPDF) return ifw;
+    const getURL = (p) => (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL)
+      ? chrome.runtime.getURL(p)
+      : p;
+    async function inlineScript(url) {
+      const res = await fetch(getURL(url), { cache: 'no-store' });
+      if (!res.ok) throw new Error('fetch 失败: ' + url);
+      const code = await res.text();
+      const s = doc.createElement('script');
+      s.textContent = code;
+      (doc.head || doc.body).appendChild(s);
+    }
+    log('加载 iframe 库（内联注入）');
+    await inlineScript('libs/html2canvas.min.js');
+    log('html2canvas 加载完成（内联）');
+    await inlineScript('libs/jspdf.umd.min.js');
+    log('jspdf.umd 加载完成（内联）');
+    // 如需 html2pdf 的高级分页，可再加载：
+    // await inlineScript('libs/html2pdf.bundle.min.js');
+
+    if (ifw.jspdf?.jsPDF && !ifw.jsPDF) {
+      try { ifw.jsPDF = ifw.jspdf.jsPDF; } catch (_) {}
+    }
+
+    for (let i = 0; i < 50; i++) { // 最长 ~5s
+      const readyH2C = !!ifw.html2canvas;
+      const readyPDF = !!(ifw.jspdf?.jsPDF || ifw.jsPDF);
+      if (readyH2C && readyPDF) return ifw;
       await new Promise(r => setTimeout(r, 100));
     }
     throw new Error('iframe 内库未就绪(html2canvas/jsPDF)');
